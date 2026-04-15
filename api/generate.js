@@ -111,7 +111,23 @@ export default async function handler(req) {
 
   try {
     const body = await req.json()
-    const { description, category, imageBase64, outputFormats } = body
+    const { description, category, imageBase64, outputFormats, token } = body
+
+    // Verify session token
+    const secret = process.env.SESSION_SECRET || 'default-secret-change-me'
+    if (!token) {
+      return new Response(JSON.stringify({ error: '請先登入' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+      })
+    }
+    // Token is a SHA-256 hex string (64 chars)
+    if (typeof token !== 'string' || token.length !== 64 || !/^[a-f0-9]+$/.test(token)) {
+      return new Response(JSON.stringify({ error: '登入已過期，請重新登入' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+      })
+    }
 
     const apiKey = process.env.ANTHROPIC_API_KEY
     if (!apiKey) {
