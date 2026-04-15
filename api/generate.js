@@ -53,6 +53,47 @@ const SEO_KEYWORDS = {
   '家電/寵物/日用百貨/家具': ['實用', '耐用', '節能', '靜音', '多功能', '居家', '質感', '設計', '收納']
 }
 
+async function callClaude(apiKey, systemPrompt, userContent, maxTokens) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userContent }]
+    })
+  })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.error?.message || 'API error')
+  return data.content?.[0]?.text || ''
+}
+
+function buildUserContent(description, category, imageBase64) {
+  const content = []
+  if (imageBase64) {
+    const mimeMatch = imageBase64.match(/^data:([^;]+);base64,/)
+    let mediaType = mimeMatch ? mimeMatch[1] : 'image/jpeg'
+    const base64Data = imageBase64.replace(/^data:[^;]+;base64,/, '')
+    try {
+      const header = base64Data.substring(0, 16)
+      const decoded = atob(header)
+      const bytes = decoded.split('').map(c => c.charCodeAt(0))
+      if (bytes[0] === 0xFF && bytes[1] === 0xD8) mediaType = 'image/jpeg'
+      else if (bytes[0] === 0x89 && bytes[1] === 0x50) mediaType = 'image/png'
+      else if (bytes[0] === 0x47 && bytes[1] === 0x49) mediaType = 'image/gif'
+      else if (bytes[0] === 0x52 && bytes[1] === 0x49) mediaType = 'image/webp'
+    } catch(e) {}
+    content.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Data } })
+  }
+  content.push({ type: 'text', text: `產品類別：${category}\n產品描述：${description || '請根據圖片分析產品'}` })
+  return content
+}
+
 export default async function handler(req) {
   if (req.method === 'OPTIONS') {
     return new Response(null, {
@@ -82,89 +123,72 @@ export default async function handler(req) {
 
     const categoryRule = CATEGORY_RULES[category] || CATEGORY_RULES['其他消費品']
     const seoKeywords = SEO_KEYWORDS[category] || SEO_KEYWORDS['其他消費品']
-
     const formatsRequested = outputFormats || ['電商商品頁文案', 'FB/IG 貼文', '蝦皮/momo 商品描述', 'SEO 關鍵字清單']
+    const userContent = buildUserContent(description, category, imageBase64)
 
-    const systemPrompt = `你是台灣電商資深文案專家，專精法規合規文案撰寫。
-
+    const baseRule = `你是台灣電商資深文案專家，專精法規合規文案撰寫。
 ${categoryRule}
+SEO關鍵字池：${seoKeywords.join('、')}
+核心原則：不使用違法宣稱詞彙、自然融入SEO關鍵字、台灣繁體中文、突出差異化賣點、功效描述停留在感官體驗層次。`
 
-【SEO 參考關鍵字池】：${seoKeywords.join('、')}
+    const result = {}
 
-【文案原則】：
-1. 絕對不使用任何違法宣稱詞彙
-2. 自然融入 SEO 關鍵字，不堆砌
-3. 台灣繁體中文，口語自然
-4. 突出產品差異化賣點
-5. 引發購買慾望但不誇大
-6. 所有功效描述停留在「感官體驗」層次
+    if (formatsRequested.includes('電商商品頁文案')) {
+      // Pass 1: 長描述，純文字輸出，不受JSON限制
+      const descSystem = `${baseRule}
 
-【輸出格式要求】：
-請以 JSON 格式輸出，包含以下欄位（只輸出被要求的格式）：
-${formatsRequested.includes('電商商品頁文案') ? `"ecommerce": { "title": "商品標題(30字內)", "subtitle": "副標題(20字內)", "description": "商品描述(150字)", "features": ["特色1", "特色2", "特色3", "特色4", "特色5"] }` : ''}
-${formatsRequested.includes('FB/IG 貼文') ? `"social": { "fb": "FB貼文(200字內，含emoji，含3個hashtag)", "ig_caption": "IG說明文(150字內，含5個hashtag)" }` : ''}
-${formatsRequested.includes('蝦皮/momo 商品描述') ? `"marketplace": { "shopee_title": "蝦皮標題(60字內含關鍵字)", "shopee_desc": "蝦皮商品描述(300字，條列式)", "momo_desc": "momo商品描述(250字，段落式)" }` : ''}
-${formatsRequested.includes('SEO 關鍵字清單') ? `"seo": { "primary": ["主要關鍵字1","主要關鍵字2","主要關鍵字3"], "secondary": ["次要關鍵字1","次要關鍵字2","次要關鍵字3","次要關鍵字4","次要關鍵字5"], "longtail": ["長尾關鍵字1","長尾關鍵字2","長尾關鍵字3"] }` : ''}
+你只需要撰寫電商商品描述文案，輸出純文字，不要JSON不要標題標籤。
 
-只輸出 JSON，不要任何其他文字。`
+請嚴格按照以下四段結構，每段獨立成段，段落間空一行：
 
-    const userContent = []
+第一段（情境共鳴）：描述目標消費者的使用場景與生活情境，讓讀者產生代入感與共鳴。此段必須寫滿90字。
 
-    if (imageBase64) {
-      const mimeMatch = imageBase64.match(/^data:([^;]+);base64,/)
-      let mediaType = mimeMatch ? mimeMatch[1] : 'image/jpeg'
-      const base64Data = imageBase64.replace(/^data:[^;]+;base64,/, '')
-      // Auto-detect from base64 magic bytes
-      const header = base64Data.substring(0, 16)
-      const decoded = atob(header)
-      const bytes = decoded.split('').map(c => c.charCodeAt(0))
-      if (bytes[0] === 0xFF && bytes[1] === 0xD8) mediaType = 'image/jpeg'
-      else if (bytes[0] === 0x89 && bytes[1] === 0x50) mediaType = 'image/png'
-      else if (bytes[0] === 0x47 && bytes[1] === 0x49) mediaType = 'image/gif'
-      else if (bytes[0] === 0x52 && bytes[1] === 0x49) mediaType = 'image/webp'
-      userContent.push({
-        type: 'image',
-        source: { type: 'base64', media_type: mediaType, data: base64Data }
-      })
+第二段（產品特性）：詳細介紹產品核心成分、質地特色、香氣、技術亮點，說明與一般同類產品的差異化賣點，自然帶入保濕、水潤、溫和等SEO關鍵字。此段必須寫滿180字。
+
+第三段（使用體驗）：描述從取用、起泡、塗抹到沖洗後的完整感官體驗，包含觸感、泡沫細緻度、沖洗後膚感、香氣留存等細節。此段必須寫滿90字。
+
+第四段（購買呼籲）：說明適用族群與容量規格，加入促購語句，讓消費者產生立即購買的衝動。此段必須寫滿55字。
+
+注意：四段合計必須超過400字。每段都要完整展開，不可省略。`
+
+      const descText = await callClaude(apiKey, descSystem, [
+        ...userContent,
+        { type: 'text', text: '請按照四段結構撰寫，每段達到規定字數，合計400字以上。' }
+      ], 1500)
+
+      // Pass 2: 標題、副標、特色
+      const titleSystem = `${baseRule}
+只輸出JSON不要任何其他文字：
+{"title":"商品標題30字內","subtitle":"副標題20字內","features":["特色1","特色2","特色3","特色4","特色5"]}`
+
+      const titleText = await callClaude(apiKey, titleSystem, userContent, 500)
+      const cleanTitle = titleText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+      let titleData = { title: '', subtitle: '', features: [] }
+      try { titleData = JSON.parse(cleanTitle) } catch(e) {}
+
+      result.ecommerce = {
+        title: titleData.title || '',
+        subtitle: titleData.subtitle || '',
+        description: descText.trim(),
+        features: titleData.features || []
+      }
     }
 
-    userContent.push({
-      type: 'text',
-      text: `產品類別：${category}\n產品描述：${description || '請根據圖片分析產品'}\n\n請生成符合台灣法規的電商文案。`
-    })
+    // Pass 3: 其他格式
+    const otherFormats = formatsRequested.filter(f => f !== '電商商品頁文案')
+    if (otherFormats.length > 0) {
+      const otherSystem = `${baseRule}
+只輸出JSON不要任何其他文字：
+{${otherFormats.includes('FB/IG 貼文') ? `"social":{"fb":"FB貼文200字含emoji含3個hashtag","ig_caption":"IG說明文150字含5個hashtag"}` : ''}${otherFormats.includes('FB/IG 貼文') && otherFormats.length > 1 ? ',' : ''}${otherFormats.includes('蝦皮/momo 商品描述') ? `"marketplace":{"shopee_title":"蝦皮標題60字內含關鍵字","shopee_desc":"蝦皮商品描述300字條列式","momo_desc":"momo商品描述250字段落式"}` : ''}${otherFormats.includes('蝦皮/momo 商品描述') && otherFormats.includes('SEO 關鍵字清單') ? ',' : ''}${otherFormats.includes('SEO 關鍵字清單') ? `"seo":{"primary":["主關鍵字1","主關鍵字2","主關鍵字3"],"secondary":["次要1","次要2","次要3","次要4","次要5"],"longtail":["長尾1","長尾2","長尾3"]}` : ''}}`
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 2000,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userContent }]
-      })
-    })
-
-    const data = await response.json()
-
-    if (!response.ok) {
-      return new Response(JSON.stringify({ error: data.error?.message || 'API 錯誤' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-      })
-    }
-
-    const text = data.content?.[0]?.text || ''
-    const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-
-    let result
-    try {
-      result = JSON.parse(clean)
-    } catch {
-      result = { raw: text }
+      const otherText = await callClaude(apiKey, otherSystem, userContent, 1500)
+      const cleanOther = otherText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+      try {
+        const otherData = JSON.parse(cleanOther)
+        if (otherData.social) result.social = otherData.social
+        if (otherData.marketplace) result.marketplace = otherData.marketplace
+        if (otherData.seo) result.seo = otherData.seo
+      } catch(e) {}
     }
 
     return new Response(JSON.stringify({ success: true, result }), {
