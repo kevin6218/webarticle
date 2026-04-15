@@ -112,8 +112,16 @@ ${formatsRequested.includes('SEO 關鍵字清單') ? `"seo": { "primary": ["主�
 
     if (imageBase64) {
       const mimeMatch = imageBase64.match(/^data:([^;]+);base64,/)
-      const mediaType = mimeMatch ? mimeMatch[1] : 'image/jpeg'
+      let mediaType = mimeMatch ? mimeMatch[1] : 'image/jpeg'
       const base64Data = imageBase64.replace(/^data:[^;]+;base64,/, '')
+      // Auto-detect from base64 magic bytes
+      const header = base64Data.substring(0, 16)
+      const decoded = atob(header)
+      const bytes = decoded.split('').map(c => c.charCodeAt(0))
+      if (bytes[0] === 0xFF && bytes[1] === 0xD8) mediaType = 'image/jpeg'
+      else if (bytes[0] === 0x89 && bytes[1] === 0x50) mediaType = 'image/png'
+      else if (bytes[0] === 0x47 && bytes[1] === 0x49) mediaType = 'image/gif'
+      else if (bytes[0] === 0x52 && bytes[1] === 0x49) mediaType = 'image/webp'
       userContent.push({
         type: 'image',
         source: { type: 'base64', media_type: mediaType, data: base64Data }
